@@ -203,10 +203,30 @@ intent — do not mix them up.
 `kcat -o earliest` does **not** error, which makes the mistake easy to miss:
 `earliest` is not one of kcat's keywords (`beginning | end | stored | <value> |
 -<value> | s@<ms> | e@<ms>`), so it falls through to the numeric parse and
-becomes the *absolute offset 0*. That happens to look identical to `beginning`
-on a fresh topic, but it is not the same thing — once retention has trimmed the
-head of the log the lowest valid offset is greater than 0, and offset 0 is then
-out of range. Use `beginning`.
+becomes the *absolute offset 0*. On a fresh topic that looks identical to
+`beginning`, but it is not the same thing: once retention has trimmed the head
+of the log the lowest valid offset is greater than 0, so offset 0 is out of
+range.
+
+**This is not hypothetical on our topic.** `recitation-c` currently has a low
+watermark of 20 (offsets 0-19 have already aged out), so the two spellings give
+opposite results:
+
+```console
+$ kcat -b localhost:9092 -t recitation-c -C -o beginning -e -q
+"2026-09-25 11:38:58,Pittsburgh,28\u00baC"
+... all 10 messages ...
+
+$ kcat -b localhost:9092 -t recitation-c -C -o earliest -e
+%4|...|OFFSET|rdkafka#consumer-1| [thrd:main]: recitation-c [0]: offset reset
+(at offset 0 ...) to offset END ...: fetch failed due to requested offset not
+available on the broker: Broker: Offset out of range
+% Reached end of topic recitation-c [0] at offset 30: exiting
+                                         <-- zero messages returned
+```
+
+`-o earliest` returns **nothing** and silently resets to the end. Use
+`beginning`.
 
 Useful companions:
 
@@ -214,3 +234,28 @@ Useful companions:
 kcat -b localhost:9092 -L                      # list topics/partitions (metadata)
 kcat -b localhost:9092 -t recitation-c -C -o -5  # last 5 messages
 ```
+
+---
+
+## Verified against the live broker
+
+Run on 2026-09-25 through the SSH tunnel (`lrach@cs544-f26.cs.uic.edu`), topic
+`recitation-c`, partition 0:
+
+- **Producer** wrote 10 records, landing at offsets **20–29**.
+- **Consumer** read all 10 back, printing partition and offset for each, and
+  wrote them to `kafka_log.csv` with the real `º` character and no `º`
+  escapes — the logging fix holds end to end.
+- **kcat** with `-o beginning` replayed all 10 from the earliest *retained*
+  offset.
+
+Note what kcat prints versus what the consumer prints:
+
+```
+kcat     -> "2026-09-25 11:38:58,Pittsburgh,28ºC"    (raw stored bytes)
+consumer -> 2026-09-25 11:38:58,Pittsburgh,28ºC           (after loads())
+```
+
+kcat shows the bytes Kafka actually stores, so the JSON quoting and the
+`ensure_ascii` escape are both plainly visible there — the same escape the
+starter's `echo` line would have written straight into the CSV.
